@@ -9,7 +9,7 @@ on:
         type: string
 
       asset_name:
-        description: "ZIP asset"
+        description: "Nama ZIP"
         required: true
         type: string
 
@@ -18,20 +18,29 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
-      - name: Setup JDK
-        uses: actions/setup-java@v4
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          packages: ""
+
+      - name: Accept Android SDK licenses
+        shell: bash
+        run: |
+          set -e
+
+          yes | sdkmanager --licenses >/dev/null || true
 
       - name: Download ZIP
         env:
@@ -41,7 +50,11 @@ jobs:
         run: |
           set -e
 
-          mkdir -p /tmp/input /tmp/project
+          mkdir -p /tmp/input
+          mkdir -p /tmp/project
+
+          echo "Release : $RELEASE_TAG"
+          echo "Asset   : $ASSET_NAME"
 
           gh release download "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
@@ -50,27 +63,62 @@ jobs:
 
           unzip -q "/tmp/input/$ASSET_NAME" -d /tmp/project
 
-      - name: Find Gradle project
+      - name: Locate Android project
+        shell: bash
         run: |
           set -e
 
-          PROJECT_DIR="$(find /tmp/project -type f -name gradlew -print -quit | xargs -r dirname)"
+          GRADLEW="$(find /tmp/project \
+            -type f \
+            -name gradlew \
+            -print -quit)"
 
-          if [ -z "$PROJECT_DIR" ]; then
-            echo "ERROR: ZIP tidak berisi gradlew."
+          if [ -z "$GRADLEW" ]; then
+            echo "======================================"
+            echo "ERROR: Android Gradle project tidak ditemukan"
+            echo "======================================"
+            echo
+            echo "Isi ZIP:"
+            find /tmp/project -maxdepth 3 -type f | head -200
             exit 1
           fi
 
+          PROJECT_DIR="$(dirname "$GRADLEW")"
+
+          echo "Android project:"
+          echo "$PROJECT_DIR"
+
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      - name: Check Gradle project
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          echo "Gradle:"
+          ./gradlew --version
+
+          echo
+          echo "Modules:"
+          ./gradlew projects
 
       - name: Build APK
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
+          set -o pipefail
+
           chmod +x gradlew
-          ./gradlew clean assembleRelease --stacktrace --no-daemon
+
+          ./gradlew \
+            clean \
+            assembleRelease \
+            --stacktrace \
+            --no-daemon \
+            --console=plain
 
       - name: Find APK
+        shell: bash
         run: |
+          set -e
+
           mkdir -p artifact
 
           find "$PROJECT_DIR" \
@@ -78,11 +126,18 @@ jobs:
             -name "*.apk" \
             -exec cp {} artifact/ \;
 
-          ls -lah artifact
+          echo
+          echo "APK hasil build:"
+          find artifact -type f -name "*.apk" -ls
+
+          if ! find artifact -type f -name "*.apk" | grep -q .; then
+            echo "ERROR: APK tidak ditemukan."
+            exit 1
+          fi
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: genetik-release-apk
+          name: genetik-apk
           path: artifact/*.apk
           if-no-files-found: error
