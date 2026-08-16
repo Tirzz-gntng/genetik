@@ -1,143 +1,67 @@
-name: Build Genetik APK
+name: Build APK
 
 on:
   workflow_dispatch:
-    inputs:
-      release_tag:
-        description: "Release tag"
-        required: true
-        type: string
-
-      asset_name:
-        description: "Nama ZIP"
-        required: true
-        type: string
-
-permissions:
-  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-24.04
 
+    permissions:
+      contents: read
+
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Setup Java 17
+      - name: Setup Java
         uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: '17'
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
         with:
-          packages: ""
+          cmdline-tools-version: '14742923'
+          accept-android-sdk-licenses: true
 
-      - name: Accept Android SDK licenses
+      - name: Accept Android licenses
         shell: bash
         run: |
-          set -e
-
           yes | sdkmanager --licenses >/dev/null || true
 
-      - name: Download ZIP
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-          ASSET_NAME: ${{ inputs.asset_name }}
-        run: |
-          set -e
-
-          mkdir -p /tmp/input
-          mkdir -p /tmp/project
-
-          echo "Release : $RELEASE_TAG"
-          echo "Asset   : $ASSET_NAME"
-
-          gh release download "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --pattern "$ASSET_NAME" \
-            --dir /tmp/input
-
-          unzip -q "/tmp/input/$ASSET_NAME" -d /tmp/project
-
-      - name: Locate Android project
+      - name: Check project
         shell: bash
         run: |
-          set -e
+          echo "=== PROJECT ==="
+          find . -maxdepth 2 -type f | sort | head -200
 
-          GRADLEW="$(find /tmp/project \
-            -type f \
-            -name gradlew \
-            -print -quit)"
-
-          if [ -z "$GRADLEW" ]; then
-            echo "======================================"
-            echo "ERROR: Android Gradle project tidak ditemukan"
-            echo "======================================"
-            echo
-            echo "Isi ZIP:"
-            find /tmp/project -maxdepth 3 -type f | head -200
+          if [ ! -f "./gradlew" ]; then
+            echo "ERROR: gradlew tidak ditemukan"
             exit 1
           fi
 
-          PROJECT_DIR="$(dirname "$GRADLEW")"
-
-          echo "Android project:"
-          echo "$PROJECT_DIR"
-
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-
-      - name: Check Gradle project
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: |
-          echo "Gradle:"
+          chmod +x ./gradlew
+          ls -la ./gradlew
           ./gradlew --version
 
-          echo
-          echo "Modules:"
-          ./gradlew projects
-
       - name: Build APK
-        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
         run: |
-          set -o pipefail
-
-          chmod +x gradlew
-
-          ./gradlew \
-            clean \
-            assembleRelease \
-            --stacktrace \
-            --no-daemon \
-            --console=plain
+          chmod +x ./gradlew
+          ./gradlew assembleDebug --stacktrace --no-daemon
 
       - name: Find APK
         shell: bash
         run: |
-          set -e
-
-          mkdir -p artifact
-
-          find "$PROJECT_DIR" \
-            -type f \
-            -name "*.apk" \
-            -exec cp {} artifact/ \;
-
-          echo
-          echo "APK hasil build:"
-          find artifact -type f -name "*.apk" -ls
-
-          if ! find artifact -type f -name "*.apk" | grep -q .; then
-            echo "ERROR: APK tidak ditemukan."
-            exit 1
-          fi
+          echo "=== APK ==="
+          find . -type f -name "*.apk" -print
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: genetik-apk
-          path: artifact/*.apk
+          name: apk-release
+          path: |
+            **/build/outputs/apk/**/*.apk
           if-no-files-found: error
