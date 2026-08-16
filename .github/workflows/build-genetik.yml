@@ -4,12 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Tag GitHub Release yang berisi ZIP build"
+        description: "Release tag"
         required: true
         type: string
 
       asset_name:
-        description: "Nama asset ZIP yang akan dibuild"
+        description: "ZIP asset"
         required: true
         type: string
 
