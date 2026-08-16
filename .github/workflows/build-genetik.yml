@@ -1,58 +1,88 @@
-name: Build Sync XxX APK
+name: Build Genetik APK
 
 on:
-  push:
-    branches: [ main ]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Tag GitHub Release yang berisi ZIP build"
+        required: true
+        type: string
+
+      asset_name:
+        description: "Nama asset ZIP yang akan dibuild"
+        required: true
+        type: string
+
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      actions: write
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Setup JDK
         uses: actions/setup-java@v4
         with:
-          java-version: '17'
-          distribution: 'temurin'
+          distribution: temurin
+          java-version: "17"
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
 
-      - name: Install Pillow
-        run: pip install Pillow
-
-      - name: Generate App Icons
-        run: python3 generate_icons.py
-
-      - name: Setup Gradle Wrapper
+      - name: Download ZIP
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          ASSET_NAME: ${{ inputs.asset_name }}
         run: |
-          curl -L -o android/gradle/wrapper/gradle-wrapper.jar \
-            "https://github.com/gradle/gradle/raw/v8.4.0/gradle/wrapper/gradle-wrapper.jar"
-          chmod +x android/gradlew
+          set -e
 
-      - name: Build Release APK
+          mkdir -p /tmp/input /tmp/project
+
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "$ASSET_NAME" \
+            --dir /tmp/input
+
+          unzip -q "/tmp/input/$ASSET_NAME" -d /tmp/project
+
+      - name: Find Gradle project
         run: |
-          cd android
-          ./gradlew assembleRelease --no-daemon
+          set -e
 
-      - name: Rename APK
+          PROJECT_DIR="$(find /tmp/project -type f -name gradlew -print -quit | xargs -r dirname)"
+
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "ERROR: ZIP tidak berisi gradlew."
+            exit 1
+          fi
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      - name: Build APK
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          mkdir -p output
-          find android/app/build/outputs/apk/release/ -name "*.apk" | head -1 | xargs -I{} cp {} output/SyncXxX.apk
+          chmod +x gradlew
+          ./gradlew clean assembleRelease --stacktrace --no-daemon
 
-      - name: Upload APK Artifact
+      - name: Find APK
+        run: |
+          mkdir -p artifact
+
+          find "$PROJECT_DIR" \
+            -type f \
+            -name "*.apk" \
+            -exec cp {} artifact/ \;
+
+          ls -lah artifact
+
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: CyberPro-APK
-          path: output/SyncXxX.apk
-          retention-days: 30
-          
+          name: genetik-release-apk
+          path: artifact/*.apk
+          if-no-files-found: error
