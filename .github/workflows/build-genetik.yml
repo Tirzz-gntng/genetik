@@ -1,16 +1,20 @@
-name: Build Genetik APK
+name: Build Android APK
 
 on:
   workflow_dispatch:
     inputs:
-      release_tag:
-        description: "GitHub Release tag containing the Android source ZIP"
+      build_type:
+        description: "Build type"
         required: true
-        type: string
-      asset_name:
-        description: "Source ZIP filename"
-        required: true
-        type: string
+        default: "debug"
+        type: choice
+        options:
+          - debug
+          - release
+
+  push:
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -20,115 +24,147 @@ jobs:
     name: Build Android APK
     runs-on: ubuntu-24.04
 
+    env:
+      JAVA_VERSION: "17"
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
+      - name: Show project structure
+        shell: bash
+        run: |
+          echo "===== PROJECT ROOT ====="
+          pwd
+          echo
+          find . -maxdepth 3 -type f \
+            \( -name "settings.gradle" \
+            -o -name "settings.gradle.kts" \
+            -o -name "build.gradle" \
+            -o -name "build.gradle.kts" \
+            -o -name "gradlew" \
+            -o -name "gradle-wrapper.properties" \) \
+            -print | sort
+
       - name: Setup Java 17
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v4
-        with:
-          cmdline-tools-version: "14742923"
-          accept-android-sdk-licenses: true
+        uses: android-actions/setup-android@v3
 
       - name: Accept Android SDK licenses
         shell: bash
         run: |
-          set +e
-          yes | sdkmanager --licenses >/dev/null 2>&1 || true
-          exit 0
-
-      - name: Download source ZIP from GitHub Release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
           set -e
-          mkdir -p source
 
-          gh release download "${{ inputs.release_tag }}"             --repo "$GITHUB_REPOSITORY"             --pattern "${{ inputs.asset_name }}"             --dir source
+          yes | sdkmanager --licenses >/dev/null || true
 
-          test -f "source/${{ inputs.asset_name }}" || {
-            echo "ERROR: Release asset not found."
-            ls -lah source
-            exit 1
-          }
+          echo "Android SDK licenses processed."
 
-      - name: Extract source
-        shell: bash
-        run: |
-          set -e
-          rm -rf android-project
-          mkdir -p android-project
-          unzip -q "source/${{ inputs.asset_name }}" -d android-project
-
-          echo "Extracted files:"
-          find android-project -maxdepth 5 -type f | sort | head -300
-
-      - name: Locate Android Gradle project
+      - name: Install Android SDK packages
         shell: bash
         run: |
           set -e
 
-          GRADLEW="$(find android-project -type f -name gradlew -print -quit)"
+          sdkmanager \
+            "platform-tools" \
+            "tools"
+
+          echo "Android SDK packages installed."
+
+      - name: Locate Gradle project
+        id: project
+        shell: bash
+        run: |
+          set -e
+
+          GRADLEW=$(find . -type f -name gradlew -print -quit)
 
           if [ -z "$GRADLEW" ]; then
-            echo "ERROR: gradlew was not found."
-            echo "The supplied ZIP must contain a real Android Gradle project."
-            find android-project -maxdepth 6 -type f | sort | head -500
+            echo "::error::gradlew was not found."
+            echo "This repository does not appear to contain a Gradle Android project."
             exit 1
           fi
 
-          PROJECT_DIR="$(dirname "$GRADLEW")"
-          chmod +x "$PROJECT_DIR/gradlew"
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          PROJECT_DIR=$(dirname "$GRADLEW")
 
-          echo "Android project: $PROJECT_DIR"
+          echo "gradlew=$GRADLEW" >> "$GITHUB_OUTPUT"
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
 
-      - name: Check Gradle project
+          echo "Gradle wrapper: $GRADLEW"
+          echo "Project directory: $PROJECT_DIR"
+
+      - name: Make Gradle executable
         shell: bash
         run: |
+          chmod +x "${{ steps.project.outputs.gradlew }}"
+
+      - name: Verify Gradle project
+        shell: bash
+        working-directory: ${{ steps.project.outputs.project_dir }}
+        run: |
           set -e
-          test -x "$PROJECT_DIR/gradlew"
-          "$PROJECT_DIR/gradlew" --version
+
+          echo "===== GRADLE VERSION ====="
+          ./gradlew --version
+
+          echo
+          echo "===== GRADLE TASKS ====="
+          ./gradlew tasks --all --no-daemon
+
+      - name: Build Debug APK
+        if: ${{ github.event_name == 'push' || inputs.build_type == 'debug' }}
+        shell: bash
+        working-directory: ${{ steps.project.outputs.project_dir }}
+        run: |
+          set -e
+
+          ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Build Release APK
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.build_type == 'release' }}
+        shell: bash
+        working-directory: ${{ steps.project.outputs.project_dir }}
+        run: |
+          set -e
+
+          ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Find APK files
+        id: apk
         shell: bash
         run: |
           set -e
-          cd "$PROJECT_DIR"
 
-          ./gradlew assembleRelease             --no-daemon             --stacktrace             --console=plain
+          echo "===== APK FILES ====="
 
-      - name: Find APK
-        shell: bash
-        run: |
-          set -e
-          mkdir -p output
+          find . \
+            -type f \
+            -name "*.apk" \
+            -print
 
-          APK="$(find "$PROJECT_DIR"             -type f             -name '*.apk'             -path '*/build/outputs/*'             -print -quit)"
+          COUNT=$(find . -type f -name "*.apk" | wc -l)
 
-          if [ -z "$APK" ]; then
-            echo "ERROR: No APK was produced."
-            find "$PROJECT_DIR" -type f -name '*.apk' -print
+          if [ "$COUNT" -eq 0 ]; then
+            echo "::error::No APK was generated."
             exit 1
           fi
 
-          cp "$APK" output/genetik-release.apk
-          ls -lh output/genetik-release.apk
+          echo "Found $COUNT APK file(s)."
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: genetik-release-apk
-          path: output/genetik-release.apk
+          name: android-apk-${{ github.run_number }}
+          path: |
+            **/*.apk
           if-no-files-found: error
           retention-days: 7
 
@@ -137,15 +173,11 @@ jobs:
         shell: bash
         run: |
           {
-            echo "# Android APK Build"
-            echo ""
-            echo "**Release:** ${{ inputs.release_tag }}"
-            echo ""
-            echo "**Source:** ${{ inputs.asset_name }}"
-            echo ""
-            if [ -d output ]; then
-              echo "## Output"
-              ls -lh output/
-            fi
+            echo "# Android Build"
+            echo
+            echo "**Run:** ${{ github.run_number }}"
+            echo
+            echo "## APK files"
+            echo
+            find . -type f -name "*.apk" -print
           } >> "$GITHUB_STEP_SUMMARY"
-          
