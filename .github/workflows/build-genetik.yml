@@ -1,16 +1,19 @@
-name: Build Android APK
+name: Build Genetik
 
 on:
   workflow_dispatch:
     inputs:
-      build_type:
-        description: "Build type"
-        required: true
-        default: "debug"
-        type: choice
-        options:
-          - debug
-          - release
+      release_tag:
+        description: "Release tag"
+        required: false
+        type: string
+        default: ""
+
+      asset_name:
+        description: "Asset name"
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -21,7 +24,7 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v6
 
       - name: Setup Java 17
@@ -36,82 +39,102 @@ jobs:
       - name: Accept Android SDK licenses
         shell: bash
         run: |
-          yes | sdkmanager --licenses >/dev/null || true
-
-      - name: Install Android SDK packages
-        shell: bash
-        run: |
-          sdkmanager "platform-tools"
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
 
       - name: Verify Android project
         shell: bash
         run: |
-          echo "Checking Android project..."
+          echo "=== Checking Android project ==="
 
-          if [ -f "./gradlew" ]; then
-            echo "Gradle wrapper found."
-          elif find . -name "gradlew" -type f -print -quit | grep -q .; then
-            echo "Gradle wrapper found in project subdirectory."
-          else
-            echo "::error::No gradlew file found."
-            echo "The repository does not appear to contain a standard Gradle Android project."
+          echo "Repository:"
+          pwd
+
+          echo ""
+          echo "Files:"
+          find . -maxdepth 3 -type f | sort | head -200
+
+          GRADLEW="$(find . -type f -name gradlew -print -quit)"
+
+          if [ -z "$GRADLEW" ]; then
+            echo "::error::gradlew tidak ditemukan."
+            echo "::error::Repository bukan Gradle Android project yang lengkap."
             exit 1
           fi
 
-      - name: Make Gradle executable
+          echo ""
+          echo "Gradle wrapper ditemukan:"
+          echo "$GRADLEW"
+
+      - name: Prepare Gradle
         shell: bash
         run: |
-          GRADLEW="$(find . -name gradlew -type f -print -quit)"
+          GRADLEW="$(find . -type f -name gradlew -print -quit)"
 
           if [ -z "$GRADLEW" ]; then
-            echo "::error::gradlew not found."
+            echo "::error::gradlew tidak ditemukan."
             exit 1
           fi
 
           chmod +x "$GRADLEW"
 
-      - name: Build Debug APK
-        if: inputs.build_type == 'debug'
-        shell: bash
-        run: |
-          GRADLEW="$(find . -name gradlew -type f -print -quit)"
           PROJECT_DIR="$(dirname "$GRADLEW")"
 
-          cd "$PROJECT_DIR"
-          ./gradlew assembleDebug --no-daemon --stacktrace
+          echo "Project directory: $PROJECT_DIR"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-      - name: Build Release APK
-        if: inputs.build_type == 'release'
+      - name: Check Gradle project
         shell: bash
         run: |
-          GRADLEW="$(find . -name gradlew -type f -print -quit)"
-          PROJECT_DIR="$(dirname "$GRADLEW")"
-
           cd "$PROJECT_DIR"
-          ./gradlew assembleRelease --no-daemon --stacktrace
 
-      - name: Find APK
-        shell: bash
-        run: |
-          mkdir -p output
+          echo "=== Gradle files ==="
+          ls -la
 
-          find . \
-            -type f \
-            -name "*.apk" \
-            -not -path "./output/*" \
-            -exec cp {} output/ \;
-
-          echo "APK files:"
-          find output -type f -name "*.apk" -print
-
-          if ! find output -type f -name "*.apk" | grep -q .; then
-            echo "::error::No APK was generated."
+          if [ ! -f "./gradlew" ]; then
+            echo "::error::gradlew tidak ditemukan di $PROJECT_DIR"
             exit 1
           fi
 
-      - name: Upload APK
+          if [ ! -f "./settings.gradle" ] && \
+             [ ! -f "./settings.gradle.kts" ]; then
+            echo "::error::settings.gradle atau settings.gradle.kts tidak ditemukan."
+            exit 1
+          fi
+
+          echo "Gradle project OK."
+
+      - name: Build Debug APK
+        shell: bash
+        run: |
+          cd "$PROJECT_DIR"
+
+          ./gradlew assembleDebug \
+            --no-daemon \
+            --stacktrace
+
+      - name: Collect APK
+        shell: bash
+        run: |
+          rm -rf output
+          mkdir -p output
+
+          find "$PROJECT_DIR" \
+            -type f \
+            -name "*.apk" \
+            -not -path "*/build/intermediates/*" \
+            -exec cp {} output/ \;
+
+          echo "=== Generated APK ==="
+          ls -lh output/
+
+          if ! find output -type f -name "*.apk" | grep -q .; then
+            echo "::error::APK tidak berhasil dibuat."
+            exit 1
+          fi
+
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: android-apk
+          name: ${{ inputs.asset_name != '' && inputs.asset_name || 'genetik-apk' }}
           path: output/*.apk
           if-no-files-found: error
