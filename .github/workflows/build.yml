@@ -3,11 +3,14 @@ name: Universal ZIP to APK
 on:
   workflow_dispatch:
     inputs:
-      zip_file:
-        description: "Nama ZIP di repository"
+      release_tag:
+        description: "Tag release GitHub tempat ZIP diupload"
         required: true
         type: string
-        default: "base genetik.zip"
+      asset_name:
+        description: "Nama file asset ZIP di release"
+        required: true
+        type: string
       build_type:
         description: "Auto mendeteksi jenis project"
         required: true
@@ -54,6 +57,29 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Download ZIP dari Release
+        id: download
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          TAG="${{ inputs.release_tag }}"
+          ASSET="${{ inputs.asset_name }}"
+
+          gh release download "$TAG" \
+            --repo "${{ github.repository }}" \
+            --pattern "$ASSET" \
+            --clobber
+
+          if [ ! -f "$ASSET" ]; then
+            echo "::error::Gagal download asset '$ASSET' dari release '$TAG'"
+            exit 1
+          fi
+
+          echo "zip_path=$ASSET" >> "$GITHUB_OUTPUT"
+
       - name: Extract ZIP
         id: extract
         shell: bash
@@ -62,7 +88,7 @@ jobs:
 
           mkdir -p workspace
 
-          ZIP="${{ inputs.zip_file }}"
+          ZIP="${{ steps.download.outputs.zip_path }}"
 
           if [ ! -f "$ZIP" ]; then
             echo "::error::ZIP tidak ditemukan: $ZIP"
