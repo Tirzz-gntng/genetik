@@ -62,7 +62,7 @@ jobs:
           fi
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: '17'
           distribution: 'temurin'
@@ -72,11 +72,14 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install Pillow
-        run: pip install Pillow
-
-      - name: Generate App Icons
-        run: python3 generate_icons.py
+      - name: Install Pillow & Generate App Icons
+        run: |
+          if [ -f generate_icons.py ]; then
+            pip install Pillow
+            python3 generate_icons.py
+          else
+            echo "generate_icons.py tidak ada di repo, step dilewati."
+          fi
 
       - name: Setup Gradle Wrapper
         run: |
