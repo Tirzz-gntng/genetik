@@ -1,113 +1,398 @@
-name: Build Sync XxX APK
+name: Universal ZIP to APK
 
 on:
-  push:
-    branches: [ main ]
   workflow_dispatch:
     inputs:
-      release_tag:
-        description: 'Tag GitHub Release tempat ZIP project di-upload (dikirim bot)'
-        required: false
+      zip_file:
+        description: "Nama ZIP di repository"
+        required: true
         type: string
-      asset_name:
-        description: 'Nama file asset ZIP di release tersebut (dikirim bot)'
-        required: false
-        type: string
+        default: "base genetik.zip"
+      build_type:
+        description: "Auto mendeteksi jenis project"
+        required: true
+        type: choice
+        options:
+          - auto
+          - android
+          - flutter
+          - webview
+        default: auto
+
+permissions:
+  contents: read
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      actions: write
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download uploaded ZIP from Release
-        if: ${{ inputs.release_tag != '' && inputs.asset_name != '' }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -e
-          gh release download "${{ inputs.release_tag }}" \
-            --repo "${{ github.repository }}" \
-            --pattern "${{ inputs.asset_name }}" \
-            --output source.zip
-          ls -lh source.zip
-
-      - name: Extract ZIP into android/
-        if: ${{ inputs.release_tag != '' && inputs.asset_name != '' }}
-        run: |
-          set -e
-          rm -rf android _src
-          mkdir -p _src
-          unzip -q source.zip -d _src
-
-          # ZIP boleh berisi gradlew di root ZIP, atau di dalam folder android/
-          if [ -f _src/gradlew ]; then
-            mv _src android
-          elif [ -f _src/android/gradlew ]; then
-            # Simpan dulu file-file di luar folder android/ (mis. generate_icons.py,
-            # gambar sumber icon seperti instagram.jpg, telegram.jpg, dll)
-            # ke root repo SEBELUM folder _src dihapus, supaya tidak ikut terhapus.
-            find _src -maxdepth 1 -mindepth 1 ! -name "android" -exec mv {} . \;
-            mv _src/android android
-            rm -rf _src
-          else
-            GRADLEW_PATH=$(find _src -maxdepth 4 -name "gradlew" -type f | head -1)
-            if [ -z "$GRADLEW_PATH" ]; then
-              echo "::error::gradlew tidak ditemukan di dalam ZIP (harus ada di root atau di android/)."
-              exit 1
-            fi
-            mv "$(dirname "$GRADLEW_PATH")" android
-            rm -rf _src
-          fi
-
-      - name: Set up JDK 17
+      - name: Setup Java 17
         uses: actions/setup-java@v5
         with:
-          java-version: '17'
-          distribution: 'temurin'
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
 
-      - name: Set up Python
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK
+        run: |
+          sdkmanager "platform-tools"
+          sdkmanager "platforms;android-35"
+          sdkmanager "platforms;android-36"
+          sdkmanager "build-tools;35.0.0"
+          sdkmanager "build-tools;36.0.0"
+          yes | sdkmanager --licenses >/dev/null || true
+
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
-      - name: Install Pillow & Generate App Icons
+      - name: Extract ZIP
+        id: extract
+        shell: bash
         run: |
-          if [ -f generate_icons.py ]; then
-            pip install Pillow
-            python3 generate_icons.py
-          else
-            echo "generate_icons.py tidak ada di repo, step dilewati."
-          fi
+          set -euo pipefail
 
-      - name: Setup Gradle Wrapper
-        run: |
-          set -e
-          chmod +x android/gradlew
-          if [ ! -f android/gradle/wrapper/gradle-wrapper.jar ]; then
-            echo "::error::gradle-wrapper.jar tidak ada di ZIP yang di-upload. ZIP harus menyertakan folder gradle/wrapper/ lengkap (gradlew, gradlew.bat, gradle-wrapper.jar, gradle-wrapper.properties)."
+          mkdir -p workspace
+
+          ZIP="${{ inputs.zip_file }}"
+
+          if [ ! -f "$ZIP" ]; then
+            echo "::error::ZIP tidak ditemukan: $ZIP"
             exit 1
           fi
 
-      - name: Build Release APK
-        run: |
-          cd android
-          ./gradlew assembleRelease --no-daemon
+          unzip -q "$ZIP" -d workspace
 
-      - name: Rename APK
+          echo "Isi ZIP:"
+          find workspace -maxdepth 4 -type f | sort | head -300
+
+      - name: Detect project
+        id: detect
+        shell: bash
         run: |
+          set -euo pipefail
+
+          REQUESTED="${{ inputs.build_type }}"
+
+          if [ "$REQUESTED" != "auto" ]; then
+            echo "type=$REQUESTED" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Flutter project
+          if find workspace -type f -name "pubspec.yaml" -print -quit | grep -q .; then
+            echo "type=flutter" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Native Android project
+          if find workspace -type f -name "gradlew" -print -quit | grep -q .; then
+            echo "type=android" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if find workspace -type f \
+            \( -name "settings.gradle" -o -name "settings.gradle.kts" \) \
+            -print -quit | grep -q .; then
+            echo "type=android" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # HTML/Web project
+          if find workspace -type f -name "index.html" -print -quit | grep -q .; then
+            echo "type=webview" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "type=unknown" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Flutter
+        if: steps.detect.outputs.type == 'flutter'
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Locate Flutter project
+        if: steps.detect.outputs.type == 'flutter'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ROOT="$(find workspace -type f -name pubspec.yaml -print -quit | xargs -r dirname)"
+
+          if [ -z "$ROOT" ]; then
+            echo "::error::pubspec.yaml tidak ditemukan."
+            exit 1
+          fi
+
+          echo "FLUTTER_PROJECT=$ROOT" >> "$GITHUB_ENV"
+
+      - name: Flutter dependencies
+        if: steps.detect.outputs.type == 'flutter'
+        working-directory: ${{ env.FLUTTER_PROJECT }}
+        run: |
+          flutter --version
+          flutter pub get
+
+      - name: Build Flutter APK
+        if: steps.detect.outputs.type == 'flutter'
+        working-directory: ${{ env.FLUTTER_PROJECT }}
+        run: |
+          flutter build apk --release
+
+      - name: Collect Flutter APK
+        if: steps.detect.outputs.type == 'flutter'
+        shell: bash
+        run: |
+          set -euo pipefail
+
           mkdir -p output
-          find android/app/build/outputs/apk/release/ -name "*.apk" | head -1 | xargs -I{} cp {} output/SyncXxX.apk
 
-      - name: Upload APK Artifact
+          APK="$(find "$FLUTTER_PROJECT/build/app/outputs/flutter-apk" \
+            -type f -name "*.apk" -print -quit)"
+
+          if [ -z "$APK" ]; then
+            echo "::error::APK Flutter tidak ditemukan."
+            exit 1
+          fi
+
+          cp "$APK" output/app-release.apk
+
+      - name: Locate Android project
+        if: steps.detect.outputs.type == 'android'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ROOT="$(find workspace -type f -name gradlew -print -quit | xargs -r dirname)"
+
+          if [ -z "$ROOT" ]; then
+            ROOT="$(find workspace -type f \
+              \( -name settings.gradle -o -name settings.gradle.kts \) \
+              -print -quit | xargs -r dirname)"
+          fi
+
+          if [ -z "$ROOT" ]; then
+            echo "::error::Project Android tidak ditemukan."
+            exit 1
+          fi
+
+          echo "ANDROID_PROJECT=$ROOT" >> "$GITHUB_ENV"
+
+      - name: Build native Android APK
+        if: steps.detect.outputs.type == 'android'
+        working-directory: ${{ env.ANDROID_PROJECT }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -f "./gradlew" ]; then
+            chmod +x ./gradlew
+            ./gradlew assembleRelease --no-daemon --stacktrace
+          else
+            echo "::error::gradlew tidak ditemukan."
+            exit 1
+          fi
+
+      - name: Collect native Android APK
+        if: steps.detect.outputs.type == 'android'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p output
+
+          APK="$(find "$ANDROID_PROJECT" \
+            -type f -path "*/build/outputs/apk/*" -name "*.apk" \
+            -print -quit)"
+
+          if [ -z "$APK" ]; then
+            echo "::error::APK Android tidak ditemukan."
+            exit 1
+          fi
+
+          cp "$APK" output/app-release.apk
+
+      - name: Locate web project
+        if: steps.detect.outputs.type == 'webview'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          INDEX="$(find workspace -type f -name index.html -print -quit)"
+
+          if [ -z "$INDEX" ]; then
+            echo "::error::index.html tidak ditemukan."
+            exit 1
+          fi
+
+          echo "WEB_ROOT=$(dirname "$INDEX")" >> "$GITHUB_ENV"
+
+      - name: Create WebView Android project
+        if: steps.detect.outputs.type == 'webview'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p webview/app/src/main/java/com/tirzz/webview
+          mkdir -p webview/app/src/main/res/values
+          mkdir -p webview/app/src/main/assets
+
+          cp -r "$WEB_ROOT"/. webview/app/src/main/assets/
+
+          cat > webview/settings.gradle <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+
+          rootProject.name = "UniversalWebView"
+          include(":app")
+          EOF
+
+          cat > webview/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application' version '8.7.3' apply false
+          }
+          EOF
+
+          cat > webview/app/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace 'com.tirzz.webview'
+              compileSdk 35
+
+              defaultConfig {
+                  applicationId 'com.tirzz.webview'
+                  minSdk 23
+                  targetSdk 35
+                  versionCode 1
+                  versionName '1.0'
+              }
+          }
+
+          dependencies {
+              implementation 'androidx.webkit:webkit:1.12.1'
+          }
+          EOF
+
+          cat > webview/app/src/main/AndroidManifest.xml <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <application
+                  android:theme="@style/AppTheme"
+                  android:label="Universal Web App">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat > webview/app/src/main/res/values/styles.xml <<'EOF'
+          <resources>
+              <style name="AppTheme"
+                  parent="android:style/Theme.Material.Light.NoActionBar">
+                  <item name="android:fontFamily">sans</item>
+              </style>
+          </resources>
+          EOF
+
+          cat > webview/app/src/main/java/com/tirzz/webview/MainActivity.java <<'EOF'
+          package com.tirzz.webview;
+
+          import android.app.Activity;
+          import android.os.Bundle;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+
+          public class MainActivity extends Activity {
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+
+                  WebView webView = new WebView(this);
+
+                  WebSettings settings = webView.getSettings();
+                  settings.setJavaScriptEnabled(true);
+                  settings.setDomStorageEnabled(true);
+
+                  webView.setWebViewClient(new WebViewClient());
+                  webView.loadUrl("file:///android_asset/index.html");
+
+                  setContentView(webView);
+              }
+          }
+          EOF
+
+          cd webview
+          gradle wrapper --gradle-version 8.10.2
+          chmod +x gradlew
+
+      - name: Build WebView APK
+        if: steps.detect.outputs.type == 'webview'
+        working-directory: webview
+        run: |
+          ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Collect WebView APK
+        if: steps.detect.outputs.type == 'webview'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p output
+
+          APK="$(find app/build/outputs/apk/release \
+            -type f -name "*.apk" -print -quit)"
+
+          if [ -z "$APK" ]; then
+            echo "::error::APK WebView tidak ditemukan."
+            exit 1
+          fi
+
+          cp "$APK" output/app-release.apk
+
+      - name: Unsupported ZIP
+        if: steps.detect.outputs.type == 'unknown'
+        run: |
+          echo "::error::ZIP tidak berisi project Android, Flutter, atau Web."
+          exit 1
+
+      - name: Upload APK
+        if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: CyberPro-APK
-          path: output/SyncXxX.apk
+          name: universal-apk
+          path: output/app-release.apk
+          if-no-files-found: error
           retention-days: 30
           
