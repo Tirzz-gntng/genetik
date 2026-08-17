@@ -49,6 +49,10 @@ jobs:
           if [ -f _src/gradlew ]; then
             mv _src android
           elif [ -f _src/android/gradlew ]; then
+            # Simpan dulu file-file di luar folder android/ (mis. generate_icons.py,
+            # gambar sumber icon seperti instagram.jpg, telegram.jpg, dll)
+            # ke root repo SEBELUM folder _src dihapus, supaya tidak ikut terhapus.
+            find _src -maxdepth 1 -mindepth 1 ! -name "android" -exec mv {} . \;
             mv _src/android android
             rm -rf _src
           else
