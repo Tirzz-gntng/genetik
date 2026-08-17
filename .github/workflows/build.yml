@@ -1,0 +1,106 @@
+name: Build Sync XxX APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Tag GitHub Release tempat ZIP project di-upload (dikirim bot)'
+        required: false
+        type: string
+      asset_name:
+        description: 'Nama file asset ZIP di release tersebut (dikirim bot)'
+        required: false
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download uploaded ZIP from Release
+        if: ${{ inputs.release_tag != '' && inputs.asset_name != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          gh release download "${{ inputs.release_tag }}" \
+            --repo "${{ github.repository }}" \
+            --pattern "${{ inputs.asset_name }}" \
+            --output source.zip
+          ls -lh source.zip
+
+      - name: Extract ZIP into android/
+        if: ${{ inputs.release_tag != '' && inputs.asset_name != '' }}
+        run: |
+          set -e
+          rm -rf android _src
+          mkdir -p _src
+          unzip -q source.zip -d _src
+
+          # ZIP boleh berisi gradlew di root ZIP, atau di dalam folder android/
+          if [ -f _src/gradlew ]; then
+            mv _src android
+          elif [ -f _src/android/gradlew ]; then
+            mv _src/android android
+            rm -rf _src
+          else
+            GRADLEW_PATH=$(find _src -maxdepth 4 -name "gradlew" -type f | head -1)
+            if [ -z "$GRADLEW_PATH" ]; then
+              echo "::error::gradlew tidak ditemukan di dalam ZIP (harus ada di root atau di android/)."
+              exit 1
+            fi
+            mv "$(dirname "$GRADLEW_PATH")" android
+            rm -rf _src
+          fi
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Pillow
+        run: pip install Pillow
+
+      - name: Generate App Icons
+        run: python3 generate_icons.py
+
+      - name: Setup Gradle Wrapper
+        run: |
+          set -e
+          chmod +x android/gradlew
+          if [ ! -f android/gradle/wrapper/gradle-wrapper.jar ]; then
+            echo "::error::gradle-wrapper.jar tidak ada di ZIP yang di-upload. ZIP harus menyertakan folder gradle/wrapper/ lengkap (gradlew, gradlew.bat, gradle-wrapper.jar, gradle-wrapper.properties)."
+            exit 1
+          fi
+
+      - name: Build Release APK
+        run: |
+          cd android
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Rename APK
+        run: |
+          mkdir -p output
+          find android/app/build/outputs/apk/release/ -name "*.apk" | head -1 | xargs -I{} cp {} output/SyncXxX.apk
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CyberPro-APK
+          path: output/SyncXxX.apk
+          retention-days: 30
+          
