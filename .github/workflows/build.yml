@@ -192,6 +192,22 @@ jobs:
 
           cp "$APK" output/app-release.apk
 
+      - name: Generate app icons
+        if: steps.detect.outputs.type == 'android'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SCRIPT="$(find workspace -maxdepth 2 -type f -name generate_icons.py -print -quit)"
+
+          if [ -n "$SCRIPT" ]; then
+            SCRIPT_DIR="$(dirname "$SCRIPT")"
+            echo "Menjalankan generate_icons.py di $SCRIPT_DIR ..."
+            (cd "$SCRIPT_DIR" && python3 generate_icons.py)
+          else
+            echo "generate_icons.py tidak ditemukan, lewati generate icon."
+          fi
+
       - name: Locate Android project
         if: steps.detect.outputs.type == 'android'
         shell: bash
