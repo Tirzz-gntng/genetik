@@ -220,13 +220,20 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ -f "./gradlew" ]; then
-            chmod +x ./gradlew
-            ./gradlew assembleRelease --no-daemon --stacktrace
-          else
+          if [ ! -f "./gradlew" ]; then
             echo "::error::gradlew tidak ditemukan."
             exit 1
           fi
+
+          # ZIP kadang tidak menyertakan gradle-wrapper.jar (file biner).
+          # Kalau hilang, regenerate pakai gradle yang sudah tersedia di runner.
+          if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
+            echo "gradle-wrapper.jar tidak ditemukan, meregenerasi wrapper..."
+            gradle wrapper --gradle-version 8.10.2
+          fi
+
+          chmod +x ./gradlew
+          ./gradlew assembleRelease --no-daemon --stacktrace
 
       - name: Collect native Android APK
         if: steps.detect.outputs.type == 'android'
