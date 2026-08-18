@@ -161,6 +161,28 @@ jobs:
 
           echo "FLUTTER_PROJECT=$ROOT" >> "$GITHUB_ENV"
 
+      - name: Ensure compatible Gradle version
+        if: steps.detect.outputs.type == 'flutter'
+        working-directory: ${{ env.FLUTTER_PROJECT }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          WRAPPER="android/gradle/wrapper/gradle-wrapper.properties"
+
+          if [ -f "$WRAPPER" ]; then
+            echo "distributionUrl sebelum:"
+            grep distributionUrl "$WRAPPER" || true
+
+            # Flutter versi terbaru butuh Gradle minimal 8.14.0
+            sed -i -E 's#distributionUrl=.*#distributionUrl=https\\://services.gradle.org/distributions/gradle-8.14.2-all.zip#' "$WRAPPER"
+
+            echo "distributionUrl sesudah:"
+            grep distributionUrl "$WRAPPER"
+          else
+            echo "gradle-wrapper.properties tidak ditemukan, lewati."
+          fi
+
       - name: Flutter dependencies
         if: steps.detect.outputs.type == 'flutter'
         working-directory: ${{ env.FLUTTER_PROJECT }}
