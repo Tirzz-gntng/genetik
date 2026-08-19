@@ -472,7 +472,7 @@ jobs:
 
           mkdir -p output
 
-          APK="$(find app/build/outputs/apk/release \
+          APK="$(find webview/app/build/outputs/apk/release \
             -type f -name "*.apk" -print -quit)"
 
           if [ -z "$APK" ]; then
