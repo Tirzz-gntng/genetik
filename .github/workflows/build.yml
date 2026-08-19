@@ -371,6 +371,12 @@ jobs:
           }
           EOF
 
+          cat > webview/gradle.properties <<'EOF'
+          android.useAndroidX=true
+          android.enableJetifier=true
+          org.gradle.jvmargs=-Xmx2048m
+          EOF
+
           cat > webview/app/build.gradle <<'EOF'
           plugins {
               id 'com.android.application'
