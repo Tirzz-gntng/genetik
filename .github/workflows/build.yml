@@ -253,6 +253,37 @@ jobs:
             fi
           done
 
+      - name: Ensure compatible Kotlin version
+        if: steps.detect.outputs.type == 'flutter'
+        working-directory: ${{ env.FLUTTER_PROJECT }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Flutter versi terbaru butuh Kotlin Gradle Plugin minimal 2.2.20
+          MIN_KOTLIN="2.2.20"
+
+          for FILE in android/settings.gradle android/settings.gradle.kts android/build.gradle android/build.gradle.kts; do
+            if [ -f "$FILE" ]; then
+              if grep -q "org\.jetbrains\.kotlin\.android\|kotlin_version\|kotlin-gradle-plugin" "$FILE"; then
+                echo "Kotlin sebelum di $FILE:"
+                grep -n "org\.jetbrains\.kotlin\.android\|kotlin_version\|kotlin-gradle-plugin" "$FILE" || true
+
+                # plugins block: id("org.jetbrains.kotlin.android") version "x.x.x"
+                sed -i -E "s#(id\(?[\"']org\.jetbrains\.kotlin\.android[\"']\)? version ?[\"'])[0-9.]+([\"'])#\1${MIN_KOTLIN}\2#" "$FILE"
+
+                # ext.kotlin_version = 'x.x.x' (legacy)
+                sed -i -E "s#(ext\.kotlin_version ?= ?[\"'])[0-9.]+([\"'])#\1${MIN_KOTLIN}\2#" "$FILE"
+
+                # classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:x.x.x' (legacy)
+                sed -i -E "s#(classpath ?[\"']org\.jetbrains\.kotlin:kotlin-gradle-plugin:)[0-9.]+([\"'])#\1${MIN_KOTLIN}\2#" "$FILE"
+
+                echo "Kotlin sesudah di $FILE:"
+                grep -n "org\.jetbrains\.kotlin\.android\|kotlin_version\|kotlin-gradle-plugin" "$FILE" || true
+              fi
+            fi
+          done
+
       - name: Flutter dependencies
         if: steps.detect.outputs.type == 'flutter'
         working-directory: ${{ env.FLUTTER_PROJECT }}
