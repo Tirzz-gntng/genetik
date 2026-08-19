@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       asset_name:
-        description: "Nama file asset ZIP di release"
+        description: "Nama file asset ZIP (bisa lebih dari satu, pisahkan dengan koma atau baris baru)"
         required: true
         type: string
       build_type:
@@ -26,8 +26,38 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  prepare:
     runs-on: ubuntu-24.04
+    outputs:
+      assets: ${{ steps.parse.outputs.assets }}
+    steps:
+      - name: Parse daftar asset ZIP
+        id: parse
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RAW="${{ inputs.asset_name }}"
+
+          # Pisahkan berdasarkan koma dan/atau baris baru, buang spasi kosong
+          ASSETS_JSON="$(printf '%s' "$RAW" \
+            | tr ',' '\n' \
+            | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+            | grep -v '^$' \
+            | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+
+          echo "Daftar ZIP yang akan dibuild:"
+          echo "$ASSETS_JSON"
+
+          echo "assets=$ASSETS_JSON" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        asset: ${{ fromJson(needs.prepare.outputs.assets) }}
 
     steps:
       - name: Checkout
@@ -56,6 +86,15 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Sanitize nama asset
+        id: sanitize
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SAFE="$(printf '%s' "${{ matrix.asset }}" | sed -E 's/\.[Zz][Ii][Pp]$//' | sed -E 's/[^A-Za-z0-9._-]+/-/g')"
+          echo "name=$SAFE" >> "$GITHUB_OUTPUT"
+
       - name: Download ZIP dari Release
         id: download
         shell: bash
@@ -65,7 +104,7 @@ jobs:
           set -euo pipefail
 
           TAG="${{ inputs.release_tag }}"
-          ASSET="${{ inputs.asset_name }}"
+          ASSET="${{ matrix.asset }}"
 
           gh release download "$TAG" \
             --repo "${{ github.repository }}" \
@@ -188,6 +227,31 @@ jobs:
           else
             echo "gradle-wrapper.properties tidak ditemukan, lewati."
           fi
+
+      - name: Ensure compatible AGP version
+        if: steps.detect.outputs.type == 'flutter'
+        working-directory: ${{ env.FLUTTER_PROJECT }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Flutter versi terbaru butuh Android Gradle Plugin minimal 8.11.1
+          MIN_AGP="8.12.1"
+
+          for FILE in android/settings.gradle android/settings.gradle.kts android/build.gradle android/build.gradle.kts; do
+            if [ -f "$FILE" ]; then
+              if grep -q "com\.android\.application" "$FILE"; then
+                echo "AGP sebelum di $FILE:"
+                grep -n "com\.android\.application" "$FILE" || true
+
+                sed -i -E "s#(id\(?[\"']com\.android\.application[\"']\)? version ?[\"'])[0-9.]+([\"'])#\1${MIN_AGP}\2#" "$FILE"
+                sed -i -E "s#(classpath ?[\"']com\.android\.tools\.build:gradle:)[0-9.]+([\"'])#\1${MIN_AGP}\2#" "$FILE"
+
+                echo "AGP sesudah di $FILE:"
+                grep -n "com\.android\.application\|com\.android\.tools\.build:gradle" "$FILE" || true
+              fi
+            fi
+          done
 
       - name: Flutter dependencies
         if: steps.detect.outputs.type == 'flutter'
@@ -492,7 +556,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: universal-apk
+          name: apk-${{ steps.sanitize.outputs.name }}
           path: output/app-release.apk
           if-no-files-found: error
           retention-days: 30
