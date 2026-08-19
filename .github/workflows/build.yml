@@ -60,6 +60,26 @@ jobs:
         asset: ${{ fromJson(needs.prepare.outputs.assets) }}
 
     steps:
+      - name: Bersihkan ruang disk runner
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Disk sebelum dibersihkan:"
+          df -h /
+
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /usr/local/lib/android/sdk/ndk || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo rm -rf /usr/local/.ghcup || true
+          sudo rm -rf /usr/local/share/boost || true
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY" || true
+          sudo docker image prune -af || true
+
+          echo "Disk sesudah dibersihkan:"
+          df -h /
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -79,6 +99,7 @@ jobs:
           sdkmanager "platforms;android-36"
           sdkmanager "build-tools;35.0.0"
           sdkmanager "build-tools;36.0.0"
+          sdkmanager "ndk;27.0.12077973"
           yes | sdkmanager --licenses >/dev/null || true
 
       - name: Setup Python
